@@ -7,9 +7,12 @@ tests=(
 "nolibc|20"
 "nolibc_no_rwx_rodata|10"
 "nolibc_no_rwx_text|10"
-"no_pie|30"
+"no_pie_hello|5"
+"no_pie_argc|5"
+"no_pie_argv|5"
+"no_pie_envp|5"
+"no_pie_auxv|10"
 "pie|10"
-"envp|10"
 )
 
 loader="$(pwd)/../src/elf-loader"
@@ -81,7 +84,7 @@ execute_test()
 	outf="$filename.out"
 	reff="$filename.ref"
 
-	setsid bash -c "timeout -k 3 2 $loader $snippets/$filename > $out/$outf" >/dev/null 2>&1 & pid=$!; wait $pid;
+	setsid bash -c "ENV_TEST=test timeout -k 3 2 $loader $snippets/$filename 1 2 test > $out/$outf" >/dev/null 2>&1 & pid=$!; wait $pid;
 
 	ret_code=$?
 	ret_expected "$filename"

@@ -13,6 +13,7 @@ int main(int argc, char **argv)
 
 	env = getenv("ENV_TEST");
 	printf("ENV: %s\n", env);
+	fflush(stdout);
 
 	syscall(SYS_exit_group, 0);
 
