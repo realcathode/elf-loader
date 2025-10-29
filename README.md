@@ -1,6 +1,6 @@
 # ELF Loader Assignment
 
-## Objecives
+## Objectives
 
 * Practice working with virtual memory, memory protection, and manual relocation.
 * Understand the difference between different types of executables, like PIE, non-PIE, statically-linked, etc.
@@ -8,7 +8,7 @@
 
 ## Statement
 
-Implement a custom minimal ELF loader, capabale of loading and executing statically linked binaries in Linux.
+Implement a custom minimal ELF loader, capable of loading and executing statically linked binaries in Linux.
 
 Your loader must eventually support:
 
@@ -20,7 +20,7 @@ Your loader must eventually support:
 
 The support code consists of three directories:
 
-* `src/` where you will create your sollution
+* `src/` where you will create your solution
 * `test/` contains the test suite and a bash script to verify your work
 
 The test suite consists of source code files (`.c` and `.asm`), that will be compiled and then executed using your loader.
@@ -105,7 +105,7 @@ After that, you need to copy the argc, argv and envp in the expected layout, the
 The command-line arguments must be placed first at the top of the stack, as seen in the picture above.
 The loader can be used as `./elf_loader ./no-pie-exec arg1 arg2 arg3`.
 `arg1`, `arg2` and `arg3` must be placed on the stack for the loaded executable.
-`argc` will be also placed on the at the top of the stack.
+`argc` will also be placed at the top of the stack.
 
 #### envp (5 points out of 30)
 
