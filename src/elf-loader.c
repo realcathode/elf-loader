@@ -80,6 +80,7 @@ void load_and_run(const char *filename, int argc, char **argv, char **envp)
 
 	Elf64_Addr aligned_min = min_vaddr & ~(mask);
 	size_t total_size = max_vaddr - aligned_min;
+
 	total_size = (total_size + mask) & ~mask;
 
 	uintptr_t load_base = 0;
@@ -89,11 +90,14 @@ void load_and_run(const char *filename, int argc, char **argv, char **envp)
 		Elf64_Off program_header_offset = e_phoff + (i * e_phentsize);
 		Elf64_Phdr *phdr = (Elf64_Phdr *)(elf_header + program_header_offset);
 
-		if (phdr->p_type != PT_LOAD) continue;
+		if (phdr->p_type != PT_LOAD)
+			continue;
 
 		Elf64_Addr seg_page_vaddr = (Elf64_Addr)(phdr->p_vaddr & ~(mask));
 		size_t seg_page_offset = phdr->p_vaddr - seg_page_vaddr;
+
 		size_t map_size = seg_page_offset + phdr->p_memsz;
+
 		map_size = (map_size + mask) & ~mask;
 
 		void *target = (void *)(load_base + seg_page_vaddr);
@@ -104,16 +108,20 @@ void load_and_run(const char *filename, int argc, char **argv, char **envp)
 					MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
 					-1, 0);
 
-		if (phdr->p_filesz > 0) {
+		if (phdr->p_filesz > 0)
 			memcpy((uint8_t *)seg + seg_page_offset, (uint8_t *)elf_contents + phdr->p_offset, phdr->p_filesz);
-		}
+
 		// ############################################
 		// Load memory regions with correct permissions
 		// ############################################
 		int mem_protect = 0;
-		if (phdr->p_flags & PF_R) mem_protect = mem_protect | PROT_READ;
-		if (phdr->p_flags & PF_W) mem_protect = mem_protect | PROT_WRITE;
-		if (phdr->p_flags & PF_X) mem_protect = mem_protect | PROT_EXEC;
+		if (phdr->p_flags & PF_R)
+			mem_protect = mem_protect | PROT_READ;
+		if (phdr->p_flags & PF_W)
+			mem_protect = mem_protect | PROT_WRITE;
+		if (phdr->p_flags & PF_X)
+			mem_protect = mem_protect | PROT_EXEC;
+
 		mprotect(seg, map_size, mem_protect);
 	}
 
@@ -121,10 +129,8 @@ void load_and_run(const char *filename, int argc, char **argv, char **envp)
 	// Support Static Non-PIE Bins with LIBC
 	// ############################################
 	size_t STACK_SIZE = 2*1024*1024;
-	uint8_t *stack = mmap(NULL, STACK_SIZE,
-							PROT_READ|PROT_WRITE,
-						  	MAP_PRIVATE|MAP_ANONYMOUS,
-							-1, 0);
+
+	uint8_t *stack = mmap(NULL, STACK_SIZE, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
 
 	uintptr_t sp = (uintptr_t)(stack + STACK_SIZE);
 
@@ -139,32 +145,41 @@ void load_and_run(const char *filename, int argc, char **argv, char **envp)
 
 	// copy envp strings
 	int envc = 0;
-	while (envp && envp[envc]) envc++;
+
+	while (envp && envp[envc])
+		envc++;
+
 	uintptr_t envp_ptrs[envc+1];
+
 	for (int i = envc-1; i >= 0; i--) {
 		size_t len = strlen(envp[i])+1;
 		sp -= len;
-		memcpy((void*)sp, envp[i], len);
+		memcpy((void *)sp, envp[i], len);
 		envp_ptrs[i] = sp;
 	}
 	envp_ptrs[envc] = 0;
 
 
 	uintptr_t phdr = 0;
+
 	Elf64_Phdr *phdrs = (Elf64_Phdr *)(elf_contents + header->e_phoff);
+
 	for (Elf64_Half i = 0; i < header->e_phnum; i++) {
 		if (phdrs[i].p_type == PT_PHDR) {
 			phdr = phdrs[i].p_vaddr;
 			break;
 		}
 	}
+
 	uint64_t auxv[16];
+
 	int i=0;
+
 	auxv[i++] = AT_EXECFD;
-	auxv[i++] = (uint64_t)-1; // fd
+	auxv[i++] = -1; // fd
 
 	auxv[i++] = AT_PHDR;
-	auxv[i++] = (uint64_t)phdr;
+	auxv[i++] = (uint64_t)(phdr + load_base);
 
 	auxv[i++] = AT_PHENT;
 	auxv[i++] = (uint64_t)header->e_phentsize;
@@ -176,7 +191,7 @@ void load_and_run(const char *filename, int argc, char **argv, char **envp)
 	auxv[i++] = (uint64_t)sysconf(_SC_PAGESIZE);
 
 	auxv[i++] = AT_ENTRY;
-	auxv[i++] = (uint64_t)header->e_entry;
+	auxv[i++] = (uint64_t)(header->e_entry + load_base);
 
 	auxv[i++] = AT_RANDOM;
 	sp -= 16;
@@ -187,30 +202,33 @@ void load_and_run(const char *filename, int argc, char **argv, char **envp)
 	auxv[i++] = 0;
 
 	// push auxv
-	for (int j=i-1;j>=0;j--) {
+	for (int j = i - 1; j >= 0; j--) {
 		sp -= sizeof(uint64_t);
-		*(uint64_t*)sp = auxv[j];
+		*(uint64_t *)sp = auxv[j];
 	}
 
 	// push envp
 	for (int i = envc; i >= 0; i--) {
 		sp -= sizeof(uintptr_t);
-		*(uintptr_t*)sp = envp_ptrs[i];
+		*(uintptr_t *)sp = envp_ptrs[i];
 	}
 
 	// push argv
-	for (int i=argc;i>=0;i--) {
+	for (int i = argc; i >= 0; i--) {
 		sp -= sizeof(uintptr_t);
 		*(uintptr_t*)sp = argv_ptrs[i];
 	}
 
 	// push argc
 	sp -= sizeof(uintptr_t);
-	*(uintptr_t*)sp = argc;
+
+	*(uintptr_t *)sp = argc;
 
 	// set entry point
-	void (*entry)() = (void (*)(void))header->e_entry;
+	//void (*entry)() = (void (*)(void)header->e_entry + load_base);
+	uintptr_t entry_addr = (uintptr_t)(load_base + header->e_entry);
 
+	void (*entry)(void) = (void (*)(void))entry_addr;
 
 	// Transfer control
 	__asm__ __volatile__(
