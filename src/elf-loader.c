@@ -10,7 +10,7 @@
 #include <fcntl.h>
 #include <string.h>
 #include <stdint.h>
-
+#include <sys/random.h>
 // standard ELF types, structures, and macros
 #include <elf.h>
 
