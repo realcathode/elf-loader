@@ -8,6 +8,13 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <fcntl.h>
+#include <string.h>
+#include <stdint.h>
+
+// standard ELF types, structures, and macros
+#include <elf.h>
+
+
 
 void *map_elf(const char *filename)
 {
@@ -36,28 +43,74 @@ void *map_elf(const char *filename)
 
 void load_and_run(const char *filename, int argc, char **argv, char **envp)
 {
-	// Contents of the ELF file are in the buffer: elf_contents[x] is the x-th byte of the ELF file.
+	// ############################################
+	//	Validate ELFMAG and ELFCLASS64
+	// ############################################
 	void *elf_contents = map_elf(filename);
 
-	/**
-	 * TODO: ELF Header Validation
-	 * Validate ELF magic bytes - "Not a valid ELF file" + exit code 3 if invalid.
-	 * Validate ELF class is 64-bit (ELFCLASS64) - "Not a 64-bit ELF" + exit code 4 if invalid.
-	 */
+	unsigned char *elf_header = (unsigned char *)elf_contents;
 
-	/**
-	 * TODO: Load PT_LOAD segments
-	 * For minimal syscall-only binaries.
-	 * For each PT_LOAD segment:
-	 * - Map the segments in memory. Permissions can be RWX for now.
-	 */
+	if (
+		elf_header[0] != ELFMAG0 ||
+		elf_header[1] != ELFMAG1 ||
+		elf_header[2] != ELFMAG2 ||
+		elf_header[3] != ELFMAG3
+	) {
+		fprintf(stderr, "Not a valid ELF file\n");
+		exit(3);
+	}
 
-	/**
-	 * TODO: Load Memory Regions with Correct Permissions
-	 * For each PT_LOAD segment:
-	 *	- Set memory permissions according to program header p_flags (PF_R, PF_W, PF_X).
-	 *	- Use mprotect() or map with the correct permissions directly using mmap().
-	 */
+	if (elf_header[4] != ELFCLASS64) {
+		fprintf(stderr, "Not a 64-bit ELF\n");
+		exit(4);
+	}
+
+	// ############################################
+	// Minimal loader
+	// ############################################
+	Elf64_Ehdr *header = (Elf64_Ehdr *)elf_contents;
+	Elf64_Off e_phoff = header->e_phoff;			// Program header table file offset
+	Elf64_Half e_phnum = header->e_phnum;			// Program header table entry count
+	Elf64_Half e_phentsize = header->e_phentsize;	// Program header table entry size
+
+	size_t mask = sysconf(_SC_PAGESIZE) - 1;
+
+	Elf64_Addr min_vaddr = -1;
+	Elf64_Addr max_vaddr =  0;
+
+	Elf64_Addr aligned_min = min_vaddr & ~(mask);
+	size_t total_size = max_vaddr - aligned_min;
+	total_size = (total_size + mask) & ~mask;
+
+	uintptr_t load_base = 0;
+	void *reserved = NULL;
+
+	for (Elf64_Half i = 0; i < e_phnum; i++) {
+		Elf64_Off program_header_offset = e_phoff + (i * e_phentsize);
+		Elf64_Phdr *phdr = (Elf64_Phdr *)(elf_header + program_header_offset);
+
+		if (phdr->p_type != PT_LOAD) continue;
+
+		Elf64_Addr seg_page_vaddr = (Elf64_Addr)(phdr->p_vaddr & ~(mask));
+		size_t seg_page_offset = phdr->p_vaddr - seg_page_vaddr;
+		size_t map_size = seg_page_offset + phdr->p_memsz;
+		map_size = (map_size + mask) & ~mask;
+
+		void *target = (void *)(load_base + seg_page_vaddr);
+
+		void *seg = mmap(
+					target, map_size,
+					PROT_READ | PROT_WRITE | PROT_EXEC,
+					MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
+					-1, 0);
+
+		if (phdr->p_filesz > 0) {
+			memcpy((uint8_t *)seg + seg_page_offset, (uint8_t *)elf_contents + phdr->p_offset, phdr->p_filesz);
+		}
+
+	}
+	void (*entry_point)(void) = (void (*)(void))header->e_entry;
+	entry_point();
 
 	/**
 	 * TODO: Support Static Non-PIE Binaries with libc
