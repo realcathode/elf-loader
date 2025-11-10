@@ -115,6 +115,7 @@ void load_and_run(const char *filename, int argc, char **argv, char **envp)
 		// Load memory regions with correct permissions
 		// ############################################
 		int mem_protect = 0;
+
 		if (phdr->p_flags & PF_R)
 			mem_protect = mem_protect | PROT_READ;
 		if (phdr->p_flags & PF_W)
@@ -135,10 +136,13 @@ void load_and_run(const char *filename, int argc, char **argv, char **envp)
 	uintptr_t sp = (uintptr_t)(stack + STACK_SIZE);
 
 	uintptr_t argv_ptrs[argc+1];
+
 	for (int i = argc-1; i >= 0; i--) {
 		size_t len = strlen(argv[i])+1;
+
 		sp -= len;
-		memcpy((void*)sp, argv[i], len);
+
+		memcpy((void *)sp, argv[i], len);
 		argv_ptrs[i] = sp;
 	}
 	argv_ptrs[argc] = 0;
@@ -152,8 +156,10 @@ void load_and_run(const char *filename, int argc, char **argv, char **envp)
 	uintptr_t envp_ptrs[envc+1];
 
 	for (int i = envc-1; i >= 0; i--) {
-		size_t len = strlen(envp[i])+1;
+		size_t len = strlen(envp[i]) + 1;
+
 		sp -= len;
+
 		memcpy((void *)sp, envp[i], len);
 		envp_ptrs[i] = sp;
 	}
@@ -173,7 +179,7 @@ void load_and_run(const char *filename, int argc, char **argv, char **envp)
 
 	uint64_t auxv[16];
 
-	int i=0;
+	int i = 0;
 
 	auxv[i++] = AT_EXECFD;
 	auxv[i++] = -1; // fd
@@ -195,7 +201,7 @@ void load_and_run(const char *filename, int argc, char **argv, char **envp)
 
 	auxv[i++] = AT_RANDOM;
 	sp -= 16;
-	getrandom((void*)sp, 16, 0);
+	getrandom((void *)sp, 16, 0);
 	auxv[i++] = (uint64_t)sp;
 
 	auxv[i++] = AT_NULL;
@@ -216,7 +222,8 @@ void load_and_run(const char *filename, int argc, char **argv, char **envp)
 	// push argv
 	for (int i = argc; i >= 0; i--) {
 		sp -= sizeof(uintptr_t);
-		*(uintptr_t*)sp = argv_ptrs[i];
+
+		*(uintptr_t *)sp = argv_ptrs[i];
 	}
 
 	// push argc
