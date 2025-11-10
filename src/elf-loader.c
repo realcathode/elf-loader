@@ -117,23 +117,100 @@ void load_and_run(const char *filename, int argc, char **argv, char **envp)
 		mprotect(seg, map_size, mem_protect);
 	}
 
-	/**
-	 * TODO: Support Static Non-PIE Binaries with libc
-	 * Must set up a valid process stack, including:
-	 *	- argc, argv, envp
-	 *	- auxv vector (with entries like AT_PHDR, AT_PHENT, AT_PHNUM, etc.)
-	 * Note: Beware of the AT_RANDOM, AT_PHDR entries, the application will crash if you do not set them up properly.
-	 */
-	void *sp = NULL;
+	// ############################################
+	// Support Static Non-PIE Bins with LIBC
+	// ############################################
+	size_t STACK_SIZE = 2*1024*1024;
+	uint8_t *stack = mmap(NULL, STACK_SIZE,
+							PROT_READ|PROT_WRITE,
+						  	MAP_PRIVATE|MAP_ANONYMOUS,
+							-1, 0);
 
-	/**
-	 * TODO: Support Static PIE Executables
-	 * Map PT_LOAD segments at a random load base.
-	 * Adjust virtual addresses of segments and entry point by load_base.
-	 * Stack setup (argc, argv, envp, auxv) same as above.
-	 */
+	uintptr_t sp = (uintptr_t)(stack + STACK_SIZE);
 
+	uintptr_t argv_ptrs[argc+1];
+	for (int i = argc-1; i >= 0; i--) {
+		size_t len = strlen(argv[i])+1;
+		sp -= len;
+		memcpy((void*)sp, argv[i], len);
+		argv_ptrs[i] = sp;
+	}
+	argv_ptrs[argc] = 0;
+
+	// copy envp strings
+	int envc = 0;
+	while (envp && envp[envc]) envc++;
+	uintptr_t envp_ptrs[envc+1];
+	for (int i = envc-1; i >= 0; i--) {
+		size_t len = strlen(envp[i])+1;
+		sp -= len;
+		memcpy((void*)sp, envp[i], len);
+		envp_ptrs[i] = sp;
+	}
+	envp_ptrs[envc] = 0;
+
+
+	uintptr_t phdr = 0;
+	Elf64_Phdr *phdrs = (Elf64_Phdr *)(elf_contents + header->e_phoff);
+	for (Elf64_Half i = 0; i < header->e_phnum; i++) {
+		if (phdrs[i].p_type == PT_PHDR) {
+			phdr = phdrs[i].p_vaddr;
+			break;
+		}
+	}
+	uint64_t auxv[16];
+	int i=0;
+	auxv[i++] = AT_EXECFD;
+	auxv[i++] = (uint64_t)-1; // fd
+
+	auxv[i++] = AT_PHDR;
+	auxv[i++] = (uint64_t)phdr;
+
+	auxv[i++] = AT_PHENT;
+	auxv[i++] = (uint64_t)header->e_phentsize;
+
+	auxv[i++] = AT_PHNUM;
+	auxv[i++] = (uint64_t)header->e_phnum;
+
+	auxv[i++] = AT_PAGESZ;
+	auxv[i++] = (uint64_t)sysconf(_SC_PAGESIZE);
+
+	auxv[i++] = AT_ENTRY;
+	auxv[i++] = (uint64_t)header->e_entry;
+
+	auxv[i++] = AT_RANDOM;
+	sp -= 16;
+	getrandom((void*)sp, 16, 0);
+	auxv[i++] = (uint64_t)sp;
+
+	auxv[i++] = AT_NULL;
+	auxv[i++] = 0;
+
+	// push auxv
+	for (int j=i-1;j>=0;j--) {
+		sp -= sizeof(uint64_t);
+		*(uint64_t*)sp = auxv[j];
+	}
+
+	// push envp
+	for (int i = envc; i >= 0; i--) {
+		sp -= sizeof(uintptr_t);
+		*(uintptr_t*)sp = envp_ptrs[i];
+	}
+
+	// push argv
+	for (int i=argc;i>=0;i--) {
+		sp -= sizeof(uintptr_t);
+		*(uintptr_t*)sp = argv_ptrs[i];
+	}
+
+	// push argc
+	sp -= sizeof(uintptr_t);
+	*(uintptr_t*)sp = argc;
+
+	// set entry point
 	void (*entry)() = (void (*)(void))header->e_entry;
+
 
 	// Transfer control
 	__asm__ __volatile__(
