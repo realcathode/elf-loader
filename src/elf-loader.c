@@ -107,7 +107,14 @@ void load_and_run(const char *filename, int argc, char **argv, char **envp)
 		if (phdr->p_filesz > 0) {
 			memcpy((uint8_t *)seg + seg_page_offset, (uint8_t *)elf_contents + phdr->p_offset, phdr->p_filesz);
 		}
-
+		// ############################################
+		// Load memory regions with correct permissions
+		// ############################################
+		int mem_protect = 0;
+		if (phdr->p_flags & PF_R) mem_protect = mem_protect | PROT_READ;
+		if (phdr->p_flags & PF_W) mem_protect = mem_protect | PROT_WRITE;
+		if (phdr->p_flags & PF_X) mem_protect = mem_protect | PROT_EXEC;
+		mprotect(seg, map_size, mem_protect);
 	}
 	void (*entry_point)(void) = (void (*)(void))header->e_entry;
 	entry_point();
