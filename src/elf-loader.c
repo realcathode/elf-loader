@@ -116,8 +116,6 @@ void load_and_run(const char *filename, int argc, char **argv, char **envp)
 		if (phdr->p_flags & PF_X) mem_protect = mem_protect | PROT_EXEC;
 		mprotect(seg, map_size, mem_protect);
 	}
-	void (*entry_point)(void) = (void (*)(void))header->e_entry;
-	entry_point();
 
 	/**
 	 * TODO: Support Static Non-PIE Binaries with libc
@@ -135,8 +133,7 @@ void load_and_run(const char *filename, int argc, char **argv, char **envp)
 	 * Stack setup (argc, argv, envp, auxv) same as above.
 	 */
 
-	// TODO: Set the entry point and the stack pointer
-	void (*entry)() = NULL;
+	void (*entry)() = (void (*)(void))header->e_entry;
 
 	// Transfer control
 	__asm__ __volatile__(
