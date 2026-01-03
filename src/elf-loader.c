@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: BSD-3-Clause
-
 #define _GNU_SOURCE
 
 #include <stdio.h>
@@ -11,72 +9,91 @@
 #include <string.h>
 #include <stdint.h>
 #include <sys/random.h>
-// standard ELF types, structures, and macros
 #include <elf.h>
 
+static void die(const char *msg) {
+    perror(msg);
+    _exit(1);
+}
 
+void validate_elf(void *p, size_t sz) {
+    if (sz < sizeof(Elf64_Ehdr)) {
+        die("file too small to be ELF");
+    }
 
-void *map_elf(const char *filename)
-{
-	// This part helps you store the content of the ELF file inside the buffer.
-	struct stat st;
-	void *file;
-	int fd;
+    Elf64_Ehdr *eh = (Elf64_Ehdr *)p;
 
-	fd = open(filename, O_RDONLY);
-	if (fd < 0) {
-		perror("open");
-		exit(1);
-	}
+    if (memcmp(eh->e_ident, ELFMAG, SELFMAG) != 0) {
+        die("invalid ELF magic");
+    }
 
-	fstat(fd, &st);
+    if (eh->e_ident[EI_CLASS] != ELFCLASS64) {
+        die("not a 64-bit ELF");
+    }
 
-	file = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
-	if (file == MAP_FAILED) {
-		perror("mmap");
-		close(fd);
-		exit(1);
-	}
+    if (eh->e_ident[EI_DATA] != ELFDATA2LSB) {
+        die("unsupported endianness");
+    }
 
-	return file;
+    if (eh->e_type != ET_EXEC) {
+        die("not a static executable (ET_EXEC required)");
+    }
+
+    if (eh->e_machine != EM_X86_64) {
+        die("invalid architecture");
+    }
+}
+
+static void *map_elf(const char *path, size_t *sz) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) die("open");
+
+    struct stat st;
+    if (fstat(fd, &st)) die("fstat");
+
+    void *p = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (p == MAP_FAILED) die("mmap file");
+
+    close(fd);
+    *sz = st.st_size;
+    return p;
 }
 
 void load_and_run(const char *filename, int argc, char **argv, char **envp)
 {
 	// ############################################
-	//	Validate ELFMAG and ELFCLASS64
+	//	Load and validate ELF file
 	// ############################################
-	void *elf_contents = map_elf(filename);
+	size_t elf_sz;
+    uint8_t *elf_contents = map_elf(filename, &elf_sz);
+    Elf64_Ehdr *eh = (Elf64_Ehdr *)elf_contents;
 
-	unsigned char *elf_header = (unsigned char *)elf_contents;
+    validate_elf(eh, elf_sz);
 
-	if (
-		elf_header[0] != ELFMAG0 ||
-		elf_header[1] != ELFMAG1 ||
-		elf_header[2] != ELFMAG2 ||
-		elf_header[3] != ELFMAG3
-	) {
-		fprintf(stderr, "Not a valid ELF file\n");
-		exit(3);
-	}
+    // https://man7.org/linux/man-pages/man5/elf.5.html
+    Elf64_Off e_phoff = eh->e_phoff;
+    Elf64_Half e_phnum = eh->e_phnum;
+    Elf64_Half e_phentsize = eh->e_phentsize;
 
-	if (elf_header[4] != ELFCLASS64) {
-		fprintf(stderr, "Not a 64-bit ELF\n");
-		exit(4);
-	}
-
-	// ############################################
-	// Minimal loader
-	// ############################################
-	Elf64_Ehdr *header = (Elf64_Ehdr *)elf_contents;
-	Elf64_Off e_phoff = header->e_phoff;			// Program header table file offset
-	Elf64_Half e_phnum = header->e_phnum;			// Program header table entry count
-	Elf64_Half e_phentsize = header->e_phentsize;	// Program header table entry size
+    Elf64_Phdr *phdrs = (Elf64_Phdr *)(elf_contents + e_phoff);
 
 	size_t mask = sysconf(_SC_PAGESIZE) - 1;
 
 	Elf64_Addr min_vaddr = -1;
 	Elf64_Addr max_vaddr =  0;
+
+    for (int i = 0; i < e_phnum; i++) {
+       Elf64_Phdr *ph = &phdrs[i];
+
+       if (ph->p_type != PT_LOAD)
+           continue;
+
+       if (ph->p_vaddr < min_vaddr)
+           min_vaddr = ph->p_vaddr;
+
+       if (ph->p_vaddr + ph->p_memsz > max_vaddr)
+           max_vaddr = ph->p_vaddr + ph->p_memsz;
+   }
 
 	Elf64_Addr aligned_min = min_vaddr & ~(mask);
 	size_t total_size = max_vaddr - aligned_min;
@@ -87,40 +104,39 @@ void load_and_run(const char *filename, int argc, char **argv, char **envp)
 	void *reserved = NULL;
 
 	for (Elf64_Half i = 0; i < e_phnum; i++) {
-		Elf64_Off program_header_offset = e_phoff + (i * e_phentsize);
-		Elf64_Phdr *phdr = (Elf64_Phdr *)(elf_header + program_header_offset);
+	    Elf64_Phdr *ph = &phdrs[i];
 
-		if (phdr->p_type != PT_LOAD)
+		if (ph->p_type != PT_LOAD)
 			continue;
 
-		Elf64_Addr seg_page_vaddr = (Elf64_Addr)(phdr->p_vaddr & ~(mask));
-		size_t seg_page_offset = phdr->p_vaddr - seg_page_vaddr;
+        Elf64_Addr seg_page_vaddr = ph->p_vaddr & ~mask;
+        size_t seg_page_offset = ph->p_vaddr - seg_page_vaddr;
+        size_t map_size = (seg_page_offset + ph->p_memsz + mask) & ~mask;
 
-		size_t map_size = seg_page_offset + phdr->p_memsz;
+        void *target = (void *)seg_page_vaddr;
+        void *seg = mmap(target, map_size,
+                 PROT_READ | PROT_WRITE | PROT_EXEC,
+                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
+                 -1, 0);
 
-		map_size = (map_size + mask) & ~mask;
+        if (seg == MAP_FAILED)
+            die("mmap failed");
 
-		void *target = (void *)(load_base + seg_page_vaddr);
-
-		void *seg = mmap(
-					target, map_size,
-					PROT_READ | PROT_WRITE | PROT_EXEC,
-					MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
-					-1, 0);
-
-		if (phdr->p_filesz > 0)
-			memcpy((uint8_t *)seg + seg_page_offset, (uint8_t *)elf_contents + phdr->p_offset, phdr->p_filesz);
-
+        if (ph->p_filesz > 0) {
+            memcpy((uint8_t *)seg + seg_page_offset,
+                   (uint8_t *)elf_contents + ph->p_offset,
+                   ph->p_filesz);
+        }
 		// ############################################
 		// Load memory regions with correct permissions
 		// ############################################
 		int mem_protect = 0;
 
-		if (phdr->p_flags & PF_R)
+		if (ph->p_flags & PF_R)
 			mem_protect = mem_protect | PROT_READ;
-		if (phdr->p_flags & PF_W)
+		if (ph->p_flags & PF_W)
 			mem_protect = mem_protect | PROT_WRITE;
-		if (phdr->p_flags & PF_X)
+		if (ph->p_flags & PF_X)
 			mem_protect = mem_protect | PROT_EXEC;
 
 		mprotect(seg, map_size, mem_protect);
@@ -129,127 +145,122 @@ void load_and_run(const char *filename, int argc, char **argv, char **envp)
 	// ############################################
 	// Support Static Non-PIE Bins with LIBC
 	// ############################################
-	size_t STACK_SIZE = 2*1024*1024;
+	size_t STACK_SIZE = 8*1024*1024;
 
-	uint8_t *stack = mmap(NULL, STACK_SIZE, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+    uint8_t *stack = mmap(NULL, STACK_SIZE,
+                    PROT_READ | PROT_WRITE,
+                    MAP_PRIVATE | MAP_ANONYMOUS,
+                    -1, 0);
+
+    if (stack == MAP_FAILED)
+        die("mmap stack");
 
 	uintptr_t sp = (uintptr_t)(stack + STACK_SIZE);
 
-	uintptr_t argv_ptrs[argc+1];
+    uintptr_t argv_ptrs[argc + 1];
+    for (int i = argc - 1; i >= 0; i--) {
+       size_t len = strlen(argv[i]) + 1;
+       sp -= len;
+       memcpy((void *)sp, argv[i], len);
+       argv_ptrs[i] = sp;
+    }
+    argv_ptrs[argc] = 0;
 
-	for (int i = argc-1; i >= 0; i--) {
-		size_t len = strlen(argv[i])+1;
+    int envc = 0;
+    while (envp && envp[envc]) envc++;
 
-		sp -= len;
+    uintptr_t envp_ptrs[envc + 1];
+    for (int i = envc - 1; i >= 0; i--) {
+       size_t len = strlen(envp[i]) + 1;
+       sp -= len;
+       memcpy((void *)sp, envp[i], len);
+       envp_ptrs[i] = sp;
+    }
+    envp_ptrs[envc] = 0;
 
-		memcpy((void *)sp, argv[i], len);
-		argv_ptrs[i] = sp;
-	}
-	argv_ptrs[argc] = 0;
+    sp &= ~0xF;
+    sp -= 16;
 
-	// copy envp strings
-	int envc = 0;
+    getrandom((void *)sp, 16, 0);
+    uintptr_t random_data_addr = sp;
 
-	while (envp && envp[envc])
-		envc++;
-
-	uintptr_t envp_ptrs[envc+1];
-
-	for (int i = envc-1; i >= 0; i--) {
-		size_t len = strlen(envp[i]) + 1;
-
-		sp -= len;
-
-		memcpy((void *)sp, envp[i], len);
-		envp_ptrs[i] = sp;
-	}
-	envp_ptrs[envc] = 0;
+    uintptr_t phdr_addr = 0;
+    for (Elf64_Half i = 0; i < eh->e_phnum; i++) {
+       if (phdrs[i].p_type == PT_PHDR) {
+          phdr_addr = phdrs[i].p_vaddr;
+          break;
+       }
+    }
+    if (!phdr_addr)
+        phdr_addr = phdrs[0].p_vaddr + eh->e_phoff;
 
 
-	uintptr_t phdr = 0;
-
-	Elf64_Phdr *phdrs = (Elf64_Phdr *)(elf_contents + header->e_phoff);
-
-	for (Elf64_Half i = 0; i < header->e_phnum; i++) {
-		if (phdrs[i].p_type == PT_PHDR) {
-			phdr = phdrs[i].p_vaddr;
-			break;
-		}
-	}
-
-	uint64_t auxv[16];
-
+	Elf64_auxv_t auxv[64];
 	int i = 0;
 
-	auxv[i++] = AT_EXECFD;
-	auxv[i++] = -1; // fd
+    // https://refspecs.linuxfoundation.org/LSB_2.1.0/LSB-Core-IA64/LSB-Core-IA64/auxiliaryvector.html
+    auxv[i].a_type = AT_EXECFD; auxv[i++].a_un.a_val = -1;
+    auxv[i].a_type = AT_PHDR;   auxv[i++].a_un.a_val = phdr_addr;
+    auxv[i].a_type = AT_PHENT;  auxv[i++].a_un.a_val = eh->e_phentsize;
+    auxv[i].a_type = AT_PHNUM;  auxv[i++].a_un.a_val = eh->e_phnum;
+    auxv[i].a_type = AT_PAGESZ; auxv[i++].a_un.a_val = sysconf(_SC_PAGESIZE);
+    auxv[i].a_type = AT_ENTRY;  auxv[i++].a_un.a_val = eh->e_entry;
+    auxv[i].a_type = AT_RANDOM; auxv[i++].a_un.a_val = random_data_addr;
+    auxv[i].a_type = AT_UID;    auxv[i++].a_un.a_val = getuid();
+    auxv[i].a_type = AT_EUID;   auxv[i++].a_un.a_val = geteuid();
+    auxv[i].a_type = AT_GID;    auxv[i++].a_un.a_val = getgid();
+    auxv[i].a_type = AT_EGID;   auxv[i++].a_un.a_val = getegid();
+    auxv[i].a_type = AT_NULL;   auxv[i++].a_un.a_val = 0;
 
-	auxv[i++] = AT_PHDR;
-	auxv[i++] = (uint64_t)(phdr + load_base);
+    // align stack 16 bytes
+    sp &= ~0xF;
 
-	auxv[i++] = AT_PHENT;
-	auxv[i++] = (uint64_t)header->e_phentsize;
+    // push auxv (last entry first)
+    for (int j = i - 1; j >= 0; j--) {
+        sp -= sizeof(Elf64_auxv_t);
+        memcpy((void *)sp, &auxv[j], sizeof(Elf64_auxv_t));
+    }
 
-	auxv[i++] = AT_PHNUM;
-	auxv[i++] = (uint64_t)header->e_phnum;
+    // push envp NULL
+    sp -= sizeof(uintptr_t);
+    *(uintptr_t *)sp = 0;
 
-	auxv[i++] = AT_PAGESZ;
-	auxv[i++] = (uint64_t)sysconf(_SC_PAGESIZE);
+    // push envp ptrs
+    for (int j = envc - 1; j >= 0; j--) {
+        sp -= sizeof(uintptr_t);
+        *(uintptr_t *)sp = envp_ptrs[j];
+    }
 
-	auxv[i++] = AT_ENTRY;
-	auxv[i++] = (uint64_t)(header->e_entry + load_base);
+    // push argv NULL
+    sp -= sizeof(uintptr_t);
+    *(uintptr_t *)sp = 0;
 
-	auxv[i++] = AT_RANDOM;
-	sp -= 16;
-	getrandom((void *)sp, 16, 0);
-	auxv[i++] = (uint64_t)sp;
+    // push argv pointers
+    for (int j = argc - 1; j >= 0; j--) {
+        sp -= sizeof(uintptr_t);
+        *(uintptr_t *)sp = argv_ptrs[j];
+    }
 
-	auxv[i++] = AT_NULL;
-	auxv[i++] = 0;
-
-	// push auxv
-	for (int j = i - 1; j >= 0; j--) {
-		sp -= sizeof(uint64_t);
-		*(uint64_t *)sp = auxv[j];
-	}
-
-	// push envp
-	for (int i = envc; i >= 0; i--) {
-		sp -= sizeof(uintptr_t);
-		*(uintptr_t *)sp = envp_ptrs[i];
-	}
-
-	// push argv
-	for (int i = argc; i >= 0; i--) {
-		sp -= sizeof(uintptr_t);
-
-		*(uintptr_t *)sp = argv_ptrs[i];
-	}
-
-	// push argc
-	sp -= sizeof(uintptr_t);
-
-	*(uintptr_t *)sp = argc;
+    // push argc
+    sp -= sizeof(uintptr_t);
+    *(uintptr_t *)sp = argc;
 
 	// set entry point
-	//void (*entry)() = (void (*)(void)header->e_entry + load_base);
-	uintptr_t entry_addr = (uintptr_t)(load_base + header->e_entry);
+    void (*entry)(void) = (void (*)(void))eh->e_entry;
 
-	void (*entry)(void) = (void (*)(void))entry_addr;
-
-	// Transfer control
-	__asm__ __volatile__(
-			"mov %0, %%rsp\n"
-			"xor %%rbp, %%rbp\n"
-			"jmp *%1\n"
-			:
-			: "r"(sp), "r"(entry)
-			: "memory"
-			);
+	// transfer control
+    __asm__ __volatile__(
+          "mov %0, %%rsp\n"      // set Stack Pointer
+          "xor %%rbp, %%rbp\n"
+          "xor %%rdx, %%rdx\n"
+          "jmp *%1\n"            // jmp to entry
+          :
+          : "D"(sp), "a"(entry)
+          : "memory", "cc", "rdx", "rsi", "rcx", "rbx" // for clobbering
+          );
 }
 
-int main(int argc, char **argv, char **envp)
-{
+int main(int argc, char **argv, char **envp) {
 	if (argc < 2) {
 		fprintf(stderr, "Usage: %s <static-elf-binary>\n", argv[0]);
 		exit(1);
