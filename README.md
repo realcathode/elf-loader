@@ -20,36 +20,31 @@ This loader successfully implements the following:
 
 ### Setup
 
-The project includes a `src/` directory for the loader and a `test/` directory with a test suite.
+The project includes a `src/` directory for the loader and a `tests/` directory with test paylaods.
 
 ### Compile and Run
 
-1.  **Build the loader:**
-    ```bash
+**Build the loader:**
+
+   ```bash
+   # (This should create the `elf_loader` executable in the `src/` directory or root).
     make
-    ```
-    (This should create the `elf_loader` executable in the `src/` directory or root).
+   ```
+    
 
-2.  **Compile the test binaries:**
-    ```bash
-    cd test/
-    make
-    cd ..
-    ```
+   In `tests/`:
+   
+   ```bash
+   gcc -static test_1payload.c -o payload 
+   ```
 
-3.  **Run the loader:**
-    Pass the path to a test binary as an argument to the loader.
-    ```bash
-    # Example for a syscall-only binary
-    ./elf_loader ./test/snippets/syscall
+   ```bash
+   $./elf-loader ../tests/payload 
+       
+   [*] Hello payload!
+   [*] Received 1 arguments.
+       argv[0]: ../tests/payload
+   [*] First environment variable: SHELL=/bin/bash
 
-    # Example for a non-PIE binary with arguments
-    ./elf_loader ./test/snippets/no_pie arg1 arg2 "hello world"
-    ```
+   ```
 
-### Run the Checker
-
-To run the automated checker (including linters):
-
-```bash
-./local.sh checker
