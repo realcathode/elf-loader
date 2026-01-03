@@ -26,25 +26,55 @@ The project includes a `src/` directory for the loader and a `tests/` directory 
 
 **Build the loader:**
 
-   ```bash
-   # (This should create the `elf_loader` executable in the `src/` directory or root).
-    make
-   ```
+```bash
+# This should create the `elf_loader` executable in `src/`.
+ gcc elf_loader.c -o elf_loader
+```
+ 
+
+In `tests/`:
+
+```bash
+gcc -static test_1payload.c -o payload 
+```
+
+```bash
+$./elf-loader ../tests/payload 
     
+[*] Hello payload!
+[*] Received 1 arguments.
+    argv[0]: ../tests/payload
+[*] First environment variable: SHELL=/bin/bash
 
-   In `tests/`:
-   
-   ```bash
-   gcc -static test_1payload.c -o payload 
-   ```
+```
 
-   ```bash
-   $./elf-loader ../tests/payload 
-       
-   [*] Hello payload!
-   [*] Received 1 arguments.
-       argv[0]: ../tests/payload
-   [*] First environment variable: SHELL=/bin/bash
+## Simple Dropper
 
-   ```
+The loader can be compiled as a standalone binary that contains an encrypted version of the payload.
 
+```bash
+# Usage: ./keygen.sh <payload_binary> [key_size_bytes]
+cd dropper
+chmod +x keygen.sh
+./keygen.sh ../tests/payload 32
+```
+
+This generates two files in the current directory:
+
+- `key.h` Contains the random XOR key.
+
+- `payload_data.h` Contains the encrypted byte array of the ELF.
+
+**Compile the payload:**
+
+```bash
+gcc dropper.c -o dropper
+
+./dropper 
+
+[*] Hello payload!
+[*] Received 1 arguments.
+    argv[0]: ./dropper
+[*] First environment variable: SHELL=/bin/bash
+
+```
