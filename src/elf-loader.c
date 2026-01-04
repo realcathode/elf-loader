@@ -214,6 +214,13 @@ void load_and_run(const char *filename, int argc, char **argv, char **envp)
 
     // align stack 16 bytes
     sp &= ~0xF;
+    printf("[DEBUG] SP after setting AUXV: %p (%d)\n", sp, (sp % 16));
+    int items = (argc + 1) + (envc + 1) + 1;
+    if (items % 2 != 0) {
+        printf("[DEBUG] Push 8 byte padding to maintain alignment.\n");
+        sp -= sizeof(uintptr_t);
+        *(uintptr_t *)sp = 0;
+    }
 
     // push auxv (last entry first)
     for (int j = i - 1; j >= 0; j--) {
@@ -244,6 +251,9 @@ void load_and_run(const char *filename, int argc, char **argv, char **envp)
     // push argc
     sp -= sizeof(uintptr_t);
     *(uintptr_t *)sp = argc;
+
+    printf("[DEBUG] Final Entry Point: %p (%d)\n", sp, sp % 16);
+    printf("[DEBUG] Transfer control\n\n");
 
 	// set entry point
     void (*entry)(void) = (void (*)(void))eh->e_entry;
