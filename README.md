@@ -2,8 +2,6 @@
 
 This project is a custom, minimal loader for 64-bit ELF executables on Linux, written in C. It is capable of parsing an ELF file, mapping its segments into memory, setting up a stack, and transferring control to the new program.
 
-It was developed as a university assignment to understand virtual memory, memory protection, and the process stack layout.
-
 ## Features
 
 This loader successfully implements the following:
@@ -15,6 +13,23 @@ This loader successfully implements the following:
     * Fully loads and runs statically linked C programs (e.g., compiled with `gcc -static`).
     * Builds a valid process stack, including `argc`, `argv`, and environment variables (`envp`).
     * Sets up the **Auxiliary Vector (AUXV)** with necessary entries like `AT_PHDR`, `AT_PHENT`, `AT_PHNUM`, `AT_RANDOM`, and `AT_NULL`.
+* The loader also supports **statically linked PIE** binaries.
+    * Static PIE binaries differ from static non‑PIE executables in that they are designed to be loaded at an arbitrary base address and require runtime relocation before execution.
+
+### Supported Binaries
+
+| Binary Type                | Supported |
+| -------------------------- | --------- |
+| Static non‑PIE (`ET_EXEC`) | Yes       |
+| Static PIE (`ET_DYN`)      | Yes       |
+| Dynamic binaries           | No        |
+
+
+### TODO
+
+* Dynamically linked PIE binaries
+* Thread-Local Storage
+* Lazy binding
 
 ## How to Use
 
@@ -30,12 +45,13 @@ The project includes a `src/` directory for the loader and a `tests/` directory 
 # This should create the `elf_loader` executable in `src/`.
  gcc elf_loader.c -o elf_loader
 ```
- 
+
 
 In `tests/`:
 
 ```bash
-gcc -static test_1payload.c -o payload 
+gcc -static test_1payload.c -o payload
+# Alternatively use -static-pie for static PIE binaries
 ```
 
 ```bash
