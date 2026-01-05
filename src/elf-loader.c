@@ -35,8 +35,8 @@ void validate_elf(void *p, size_t sz) {
         die("unsupported endianness");
     }
 
-    if (eh->e_type != ET_EXEC) {
-        die("not a static executable (ET_EXEC required)");
+    if (eh->e_type != ET_EXEC && eh->e_type != ET_DYN) {
+        die("not a valid ELF (ET_EXEC | ET_DYN required)");
     }
 
     if (eh->e_machine != EM_X86_64) {
@@ -59,8 +59,7 @@ static void *map_elf(const char *path, size_t *sz) {
     return p;
 }
 
-void load_and_run(const char *filename, int argc, char **argv, char **envp)
-{
+void load_and_run(const char *filename, int argc, char **argv, char **envp) {
 	// ############################################
 	//	Load and validate ELF file
 	// ############################################
@@ -79,29 +78,40 @@ void load_and_run(const char *filename, int argc, char **argv, char **envp)
 
 	size_t mask = sysconf(_SC_PAGESIZE) - 1;
 
+    int is_pie = (eh->e_type == ET_DYN);
+
 	Elf64_Addr min_vaddr = -1;
 	Elf64_Addr max_vaddr =  0;
 
     for (int i = 0; i < e_phnum; i++) {
        Elf64_Phdr *ph = &phdrs[i];
 
-       if (ph->p_type != PT_LOAD)
-           continue;
+        if (ph->p_type != PT_LOAD)
+            continue;
 
-       if (ph->p_vaddr < min_vaddr)
-           min_vaddr = ph->p_vaddr;
+        if (ph->p_vaddr < min_vaddr)
+            min_vaddr = ph->p_vaddr;
 
-       if (ph->p_vaddr + ph->p_memsz > max_vaddr)
-           max_vaddr = ph->p_vaddr + ph->p_memsz;
-   }
+        if (ph->p_vaddr + ph->p_memsz > max_vaddr)
+            max_vaddr = ph->p_vaddr + ph->p_memsz;
+    }
 
-	Elf64_Addr aligned_min = min_vaddr & ~(mask);
-	size_t total_size = max_vaddr - aligned_min;
-
-	total_size = (total_size + mask) & ~mask;
+	Elf64_Addr aligned_min = min_vaddr & ~mask;
+	size_t total_size = (max_vaddr - aligned_min + mask) & ~mask;
 
 	uintptr_t load_base = 0;
 	void *reserved = NULL;
+
+    if (is_pie) {
+        reserved = mmap(NULL, total_size,
+                        PROT_NONE,
+                        MAP_PRIVATE | MAP_ANONYMOUS,
+                        -1, 0);
+        if (reserved == MAP_FAILED)
+            die("mmap reserve");
+
+        load_base = (uintptr_t)reserved - aligned_min;
+    }
 
 	for (Elf64_Half i = 0; i < e_phnum; i++) {
 	    Elf64_Phdr *ph = &phdrs[i];
@@ -113,9 +123,9 @@ void load_and_run(const char *filename, int argc, char **argv, char **envp)
         size_t seg_page_offset = ph->p_vaddr - seg_page_vaddr;
         size_t map_size = (seg_page_offset + ph->p_memsz + mask) & ~mask;
 
-        void *target = (void *)seg_page_vaddr;
+        void *target = (void *)(load_base + seg_page_vaddr);
         void *seg = mmap(target, map_size,
-                 PROT_READ | PROT_WRITE | PROT_EXEC,
+                 PROT_READ | PROT_WRITE,
                  MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
                  -1, 0);
 
@@ -142,6 +152,37 @@ void load_and_run(const char *filename, int argc, char **argv, char **envp)
 		mprotect(seg, map_size, mem_protect);
 	}
 
+    //relocation logic
+    if (is_pie) {
+        Elf64_Dyn *dyn = NULL;
+        for (int i = 0; i < e_phnum; i++) {
+            if (phdrs[i].p_type == PT_DYNAMIC) {
+                dyn = (Elf64_Dyn *)(load_base + phdrs[i].p_vaddr);
+                break;
+            }
+        }
+        if (!dyn)
+            die("PIE without PT_DYNAMIC");
+
+        Elf64_Rela *rela = NULL;
+        size_t rela_sz = 0;
+
+        for (Elf64_Dyn *d = dyn; d->d_tag != DT_NULL; d++) {
+            if (d->d_tag == DT_RELA)
+                rela = (Elf64_Rela *)(load_base + d->d_un.d_ptr);
+            else if (d->d_tag == DT_RELASZ)
+                rela_sz = d->d_un.d_val;
+        }
+
+        for (size_t i = 0; i < rela_sz / sizeof(Elf64_Rela); i++) {
+            Elf64_Rela *r = &rela[i];
+            if (ELF64_R_TYPE(r->r_info) == R_X86_64_RELATIVE) {
+                *(Elf64_Addr *)(load_base + r->r_offset) = load_base + r->r_addend;
+            } else {
+                die("unsupported relocation");
+            }
+        }
+    }
 	// ############################################
 	// Support Static Non-PIE Bins with LIBC
 	// ############################################
@@ -159,10 +200,10 @@ void load_and_run(const char *filename, int argc, char **argv, char **envp)
 
     uintptr_t argv_ptrs[argc + 1];
     for (int i = argc - 1; i >= 0; i--) {
-       size_t len = strlen(argv[i]) + 1;
-       sp -= len;
-       memcpy((void *)sp, argv[i], len);
-       argv_ptrs[i] = sp;
+        size_t len = strlen(argv[i]) + 1;
+        sp -= len;
+        memcpy((void *)sp, argv[i], len);
+        argv_ptrs[i] = sp;
     }
     argv_ptrs[argc] = 0;
 
@@ -171,10 +212,10 @@ void load_and_run(const char *filename, int argc, char **argv, char **envp)
 
     uintptr_t envp_ptrs[envc + 1];
     for (int i = envc - 1; i >= 0; i--) {
-       size_t len = strlen(envp[i]) + 1;
-       sp -= len;
-       memcpy((void *)sp, envp[i], len);
-       envp_ptrs[i] = sp;
+        size_t len = strlen(envp[i]) + 1;
+        sp -= len;
+        memcpy((void *)sp, envp[i], len);
+        envp_ptrs[i] = sp;
     }
     envp_ptrs[envc] = 0;
 
@@ -184,16 +225,7 @@ void load_and_run(const char *filename, int argc, char **argv, char **envp)
     getrandom((void *)sp, 16, 0);
     uintptr_t random_data_addr = sp;
 
-    uintptr_t phdr_addr = 0;
-    for (Elf64_Half i = 0; i < eh->e_phnum; i++) {
-       if (phdrs[i].p_type == PT_PHDR) {
-          phdr_addr = phdrs[i].p_vaddr;
-          break;
-       }
-    }
-    if (!phdr_addr)
-        phdr_addr = phdrs[0].p_vaddr + eh->e_phoff;
-
+    uintptr_t phdr_addr = load_base + phdrs[0].p_vaddr + eh->e_phoff;
 
 	Elf64_auxv_t auxv[64];
 	int i = 0;
@@ -204,12 +236,10 @@ void load_and_run(const char *filename, int argc, char **argv, char **envp)
     auxv[i].a_type = AT_PHENT;  auxv[i++].a_un.a_val = eh->e_phentsize;
     auxv[i].a_type = AT_PHNUM;  auxv[i++].a_un.a_val = eh->e_phnum;
     auxv[i].a_type = AT_PAGESZ; auxv[i++].a_un.a_val = sysconf(_SC_PAGESIZE);
-    auxv[i].a_type = AT_ENTRY;  auxv[i++].a_un.a_val = eh->e_entry;
+    auxv[i].a_type = AT_ENTRY;  auxv[i++].a_un.a_val = load_base + eh->e_entry;
     auxv[i].a_type = AT_RANDOM; auxv[i++].a_un.a_val = random_data_addr;
-    auxv[i].a_type = AT_UID;    auxv[i++].a_un.a_val = getuid();
-    auxv[i].a_type = AT_EUID;   auxv[i++].a_un.a_val = geteuid();
-    auxv[i].a_type = AT_GID;    auxv[i++].a_un.a_val = getgid();
-    auxv[i].a_type = AT_EGID;   auxv[i++].a_un.a_val = getegid();
+    auxv[i].a_type = AT_BASE;   auxv[i++].a_un.a_val = 0;
+    auxv[i].a_type = AT_SECURE; auxv[i++].a_un.a_val = 0;
     auxv[i].a_type = AT_NULL;   auxv[i++].a_un.a_val = 0;
 
     // align stack 16 bytes
@@ -256,8 +286,7 @@ void load_and_run(const char *filename, int argc, char **argv, char **envp)
     printf("[DEBUG] Transfer control\n\n");
 
 	// set entry point
-    void (*entry)(void) = (void (*)(void))eh->e_entry;
-
+    uintptr_t entry = load_base + eh->e_entry;
 	// transfer control
     __asm__ __volatile__(
           "mov %0, %%rsp\n"      // set Stack Pointer
@@ -272,10 +301,9 @@ void load_and_run(const char *filename, int argc, char **argv, char **envp)
 
 int main(int argc, char **argv, char **envp) {
 	if (argc < 2) {
-		fprintf(stderr, "Usage: %s <static-elf-binary>\n", argv[0]);
+		fprintf(stderr, "Usage: %s <elf>\n", argv[0]);
 		exit(1);
 	}
-
 	load_and_run(argv[1], argc - 1, &argv[1], envp);
 	return 0;
 }
